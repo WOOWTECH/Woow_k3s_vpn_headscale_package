@@ -74,8 +74,14 @@ spec:
           ports:
             - containerPort: 8069
           env:
+            # Postgres runs as the sidecar container in this same pod, not a
+            # separate one — connect over localhost, not the odoo-db Service.
+            # (The odoo-db Service selects this same pod; going through it
+            # depends on the CNI's hairpin/loopback NAT support, which this
+            # cluster's flannel install does not reliably provide, and
+            # produced an unfixable "connection refused" crash loop here.)
             - name: HOST
-              value: odoo-db
+              value: "127.0.0.1"
             - name: USER
               valueFrom:
                 secretKeyRef:
