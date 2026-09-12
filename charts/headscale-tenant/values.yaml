@@ -20,7 +20,7 @@ namespace:
   # (`-n`) is never rendered - create it with --create-namespace instead - so
   # `helm uninstall` can never delete the namespace the release lives in.
   create: true
-  name: tenant-local
+  name: ""
 
 # Add `helm.sh/resource-policy: keep` to the Namespace, PVCs and chart-created
 # Secrets, so `helm uninstall` never deletes the tailnet identity or data.
