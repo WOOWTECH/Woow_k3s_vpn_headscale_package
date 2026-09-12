@@ -1,0 +1,44 @@
+{{- /*
+Fix vs. the manifests/ prototype: proxy keys are reusable + non-ephemeral
+(the prototype's reusable:false + ephemeral:true meant any proxy pod that
+lost its emptyDir state before TS_KUBE_SECRET caught up could never
+re-register — the crash-loop seen on woow-k3s tenant-test). Each proxy also
+gets its own key/secret name, never a shared one.
+*/ -}}
+{{- range .Values.proxies }}
+apiVersion: headscale.infrado.cloud/v1beta1
+kind: HeadscalePreAuthKey
+metadata:
+  name: {{ $.Release.Name }}-proxy-{{ .name }}-key
+  namespace: {{ include "headscale-tenant.ns" $ }}
+  labels:
+    {{- include "headscale-tenant.partOf" $ | nindent 4 }}
+spec:
+  headscaleRef: {{ $.Values.headscale.name }}
+  headscaleUserRef: {{ $.Values.proxyPreAuthKey.headscaleUserRef }}
+  expiration: {{ $.Values.proxyPreAuthKey.expiration | quote }}
+  reusable: {{ $.Values.proxyPreAuthKey.reusable }}
+  ephemeral: {{ $.Values.proxyPreAuthKey.ephemeral }}
+  {{- with .tags }}
+  tags:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  secretName: {{ include "headscale-tenant.proxyPreAuthSecret" (list $ .) }}
+---
+{{- end }}
+{{- if .Values.testDeviceKey.enabled }}
+apiVersion: headscale.infrado.cloud/v1beta1
+kind: HeadscalePreAuthKey
+metadata:
+  name: {{ .Release.Name }}-test-device-key
+  namespace: {{ include "headscale-tenant.ns" . }}
+  labels:
+    {{- include "headscale-tenant.partOf" . | nindent 4 }}
+spec:
+  headscaleRef: {{ .Values.headscale.name }}
+  headscaleUserRef: {{ .Values.testDeviceKey.headscaleUserRef }}
+  expiration: {{ .Values.testDeviceKey.expiration | quote }}
+  reusable: {{ .Values.testDeviceKey.reusable }}
+  ephemeral: {{ .Values.testDeviceKey.ephemeral }}
+  secretName: {{ .Release.Name }}-test-device-preauth-key
+{{- end }}

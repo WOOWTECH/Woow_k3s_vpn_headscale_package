@@ -1,0 +1,16 @@
+headscale-tenant "{{ .Release.Name }}" deployed to namespace {{ include "headscale-tenant.ns" . }}.
+
+Check the Headscale control plane:
+  kubectl -n {{ include "headscale-tenant.ns" . }} get headscale,headscaleuser,headscalepreauthkey
+
+Retrieve the test device key (if testDeviceKey.enabled):
+  kubectl -n {{ include "headscale-tenant.ns" . }} get secret {{ .Release.Name }}-test-device-preauth-key -o jsonpath='{.data.key}' | base64 -d
+
+{{- if .Values.headplane.enabled }}
+
+Reach Headplane (port-forward for now; set headplane.ingress.enabled for a route):
+  kubectl -n {{ include "headscale-tenant.ns" . }} port-forward svc/headplane 3000:3000
+{{- end }}
+
+Run the chart's smoke test:
+  helm test {{ .Release.Name }} -n {{ include "headscale-tenant.ns" . }}

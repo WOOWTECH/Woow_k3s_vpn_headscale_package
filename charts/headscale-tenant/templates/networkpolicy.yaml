@@ -1,0 +1,61 @@
+{{- /*
+Egress is left open (DERP/STUN and the public internet are reachable from
+every pod) — Tailscale proxies and Headscale itself need arbitrary outbound
+reachability and this is a demo/test tenant, not a hardened one. Ingress is
+scoped to this namespace PLUS the headscale-operator's namespace: the
+operator (running in operatorNamespace, cluster-wide, outside this tenant)
+must reach Headscale's gRPC port to create Users/PreAuthKeys/API keys — a
+namespace-only policy here would silently stall every HeadscaleUser and
+HeadscalePreAuthKey with "connection refused" while pods inside this
+namespace connect just fine, which is exactly the trap. Headplane is open to
+the namespace (front it with your own Ingress/tunnel auth for real exposure).
+*/ -}}
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-headscale-ingress
+  namespace: {{ include "headscale-tenant.ns" . }}
+  labels:
+    {{- include "headscale-tenant.partOf" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: headscale
+      app.kubernetes.io/instance: {{ .Values.headscale.name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "headscale-tenant.ns" . }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.operatorNamespace }}
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 50443
+        - protocol: TCP
+          port: 9090
+{{- if .Values.headplane.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-headplane-ingress
+  namespace: {{ include "headscale-tenant.ns" . }}
+  labels:
+    {{- include "headscale-tenant.partOf" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: headplane
+  policyTypes:
+    - Ingress
+  ingress:
+    - {}
+{{- end }}
+{{- end }}

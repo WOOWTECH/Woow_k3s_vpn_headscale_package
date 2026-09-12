@@ -1,0 +1,188 @@
+# Default values for the headscale-tenant chart.
+#
+# Requires the headscale-operator (chart 0.5.0 / app v0.6.0, CRD group
+# headscale.infrado.cloud) already installed cluster-wide. This chart does
+# NOT install the operator.
+#
+# Fixes carried over from the manifests/ prototype (see docs/DEPLOYMENT-REPORT.md):
+#   - proxy PreAuthKeys are reusable + per-proxy state Secrets (no shared secret)
+#   - proxies run in Tailscale userspace mode and forward by Kubernetes DNS name
+#     via TS_SERVE_CONFIG (no hardcoded ClusterIPs, no /dev/net/tun hostPath)
+#   - image tags are pinned (no :latest)
+#   - each proxy gets its own ServiceAccount + Role limited by resourceNames
+#     to its own state Secret
+#   - Headplane's COOKIE_SECRET is generated once and preserved across upgrades
+#   - no nodeSelector by default
+#   - no shared cloudflared ConfigMap is ever rendered by this chart
+
+namespace:
+  # Render the Namespace object. A namespace equal to the release namespace
+  # (`-n`) is never rendered - create it with --create-namespace instead - so
+  # `helm uninstall` can never delete the namespace the release lives in.
+  create: true
+  name: tenant-local
+
+# Add `helm.sh/resource-policy: keep` to the Namespace, PVCs and chart-created
+# Secrets, so `helm uninstall` never deletes the tailnet identity or data.
+keepOnUninstall: true
+
+# Default StorageClass for the Headscale PVC. local-path on the local cluster;
+# nfs-data is broken there (see MEMORY: k3s-two-clusters). Use
+# longhorn-delete on woow-k3s test installs.
+storageClassName: local-path
+
+headscale:
+  # Name of the Headscale CR (also used to derive Service/Secret names by the operator).
+  name: headscale
+  version: "v0.29.2"
+  replicas: 1
+  pvcSize: "256Mi"
+  serverUrl: "https://vpn-test.woowtech.io"
+  baseDomain: "ts.woowtech.io"
+  nameservers:
+    - "1.1.1.1"
+    - "8.8.8.8"
+  prefixes:
+    v4: "100.64.0.0/10"
+    v6: "fd7a:115c:a1e0::/48"
+  logLevel: info
+  # ACLPolicy.inline (HuJSON/JSON) — merged by the operator with any enabled
+  # HeadscaleAutoApprover resources and pushed via the gRPC API. Requires
+  # config.policy.mode=database (set below, do not change).
+  aclPolicyInline: |
+    {
+      "acls": [
+        {"action": "accept", "src": ["*"], "dst": ["*:*"]}
+      ],
+      "autoApprovers": {
+        "routes": {
+          "10.0.0.0/8": ["*"],
+          "192.168.0.0/16": ["*"]
+        },
+        "exitNode": ["*"]
+      }
+    }
+  apiKey:
+    autoManage: true
+    expiration: "2160h"
+    rotationBuffer: "1920h"
+
+# HeadscaleUser resources. `name` is the k8s object name; `username` is the
+# immutable Headscale username.
+users:
+  - name: default
+    username: default
+    displayName: "Default User"
+
+# HeadscaleAutoApprover is opt-in: the CRD's tag_owners format is documented
+# as incompatible with the Headscale v0.29.x policy parser (see
+# docs/DEPLOYMENT-REPORT.md manifests/tenant/10-auto-approver.yaml notes) — the
+# working equivalent is headscale.aclPolicyInline.autoApprovers above. Enable
+# this only once the operator/headscale versions are confirmed compatible.
+autoApprover:
+  enabled: false
+  headscaleUserRef: default
+  routes: []
+  exitNodeTags: []
+
+headplane:
+  enabled: true
+  image:
+    repository: ghcr.io/tale/headplane
+    tag: "0.7.0"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  # No nodeSelector/tolerations by default — the manifests/ prototype pinned
+  # this to control-plane nodes, which does not generalize to other clusters.
+  nodeSelector: {}
+  tolerations: []
+  ingress:
+    enabled: false
+    className: ""
+    host: ""
+    annotations: {}
+    tls: []
+
+# Tailscale proxies: one Deployment per entry, each publishing a Kubernetes
+# Service onto the tailnet at ts-hostname:targetPort via TS_SERVE_CONFIG TCP
+# forwarding (userspace mode — no NET_ADMIN, no /dev/net/tun).
+proxyImage:
+  # v1.76.6 was rejected by headscale v0.29.2 with "unsupported client
+  # version" (its capability version is too old for this headscale release);
+  # v1.102.3 is the pinned stable release that actually registers.
+  repository: tailscale/tailscale
+  tag: "v1.102.3"
+
+proxies:
+  - name: nginx
+    hostname: nginx-test
+    targetService: test-nginx
+    targetNamespace: tenant-local
+    targetPort: 80
+    tags:
+      - "tag:proxy"
+  - name: ha
+    hostname: homeassistant
+    targetService: homeassistant
+    targetNamespace: tenant-local
+    targetPort: 8123
+    tags:
+      - "tag:proxy"
+  - name: odoo
+    hostname: odoo
+    targetService: odoo
+    targetNamespace: tenant-local
+    targetPort: 8069
+    tags:
+      - "tag:proxy"
+
+proxyResources:
+  requests:
+    cpu: 20m
+    memory: 32Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# PreAuthKeys used by the proxies above: reusable + non-ephemeral so a pod
+# that loses its TS_KUBE_SECRET-backed state (e.g. rescheduled before the
+# Secret existed) can re-register instead of crash-looping forever.
+proxyPreAuthKey:
+  headscaleUserRef: default
+  expiration: "8760h"
+  reusable: true
+  ephemeral: false
+
+# A short-lived reusable key for the in-cluster functional-test client and
+# for any operator handed a device. Disable in production instances that
+# don't need a standing test key.
+testDeviceKey:
+  enabled: true
+  headscaleUserRef: default
+  expiration: "168h"
+  reusable: true
+  ephemeral: false
+
+limitRange:
+  enabled: true
+  default:
+    cpu: 200m
+    memory: 256Mi
+  defaultRequest:
+    cpu: 20m
+    memory: 32Mi
+
+networkPolicy:
+  enabled: true
+  # Namespace the headscale-operator runs in. Ingress to Headscale's control
+  # ports is allowed from this namespace AND the tenant namespace above —
+  # never from this namespace alone, or the operator itself gets locked out.
+  operatorNamespace: headscale-system
+
+tests:
+  enabled: true

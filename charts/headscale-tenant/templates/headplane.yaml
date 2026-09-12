@@ -1,0 +1,142 @@
+{{- if .Values.headplane.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: headplane
+  namespace: {{ include "headscale-tenant.ns" . }}
+  labels:
+    app: headplane
+    {{- include "headscale-tenant.partOf" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: headplane
+  template:
+    metadata:
+      labels:
+        app: headplane
+      annotations:
+        # Ties the pod template to the ConfigMap's content so a values change
+        # rolls the pod; the Secret is intentionally NOT hashed in here (that
+        # would restart headplane, and every session, on every upgrade even
+        # when the cookie secret is preserved).
+        checksum/config: {{ include (print $.Template.BasePath "/headplane-configmap.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.headplane.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.headplane.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: headplane
+          image: "{{ .Values.headplane.image.repository }}:{{ .Values.headplane.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/headplane/config.yaml
+              subPath: config.yaml
+            - name: api-key
+              mountPath: /etc/headplane/api-key
+              readOnly: true
+            - name: cookie-secret
+              mountPath: /etc/headplane/secrets
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /var/lib/headplane
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.headplane.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+      volumes:
+        - name: config
+          configMap:
+            name: headplane-config
+        - name: api-key
+          secret:
+            secretName: {{ .Values.headscale.name }}-api-key
+        - name: cookie-secret
+          secret:
+            secretName: headplane-secrets
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: headplane
+  namespace: {{ include "headscale-tenant.ns" . }}
+  labels:
+    app: headplane
+    {{- include "headscale-tenant.partOf" . | nindent 4 }}
+spec:
+  selector:
+    app: headplane
+  ports:
+    - port: 3000
+      targetPort: http
+      protocol: TCP
+      name: http
+  type: ClusterIP
+{{- if .Values.headplane.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: headplane
+  namespace: {{ include "headscale-tenant.ns" . }}
+  labels:
+    app: headplane
+    {{- include "headscale-tenant.partOf" . | nindent 4 }}
+  {{- with .Values.headplane.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.headplane.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ required "headplane.ingress.host is required when headplane.ingress.enabled=true" .Values.headplane.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: headplane
+                port:
+                  name: http
+  {{- with .Values.headplane.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}
