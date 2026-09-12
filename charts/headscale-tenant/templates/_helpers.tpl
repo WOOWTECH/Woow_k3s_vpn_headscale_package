@@ -2,8 +2,14 @@
 Helper templates for the headscale-tenant chart.
 */}}
 
+{{- /*
+Object placement. `namespace.name` is EMPTY by default so placement follows
+`-n`/`--namespace`. Setting it wins over `-n`, so a `-n <test-ns> -f <real
+instance values>` rehearsal would write to the REAL namespace. Never set it
+in a committed instance values file.
+*/ -}}
 {{- define "headscale-tenant.ns" -}}
-{{ .Values.namespace.name }}
+{{ .Values.namespace.name | default .Release.Namespace }}
 {{- end -}}
 
 {{- define "headscale-tenant.partOf" -}}
