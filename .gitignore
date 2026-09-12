@@ -1,8 +1,13 @@
-# Secrets — never commit real keys
-*.key
-*.pem
-.env
-secrets/
+# Secrets — never commit real keys. Anchored to the repo root (leading "/")
+# on purpose: an unanchored "secrets.yaml" or "secrets/" pattern can silently
+# match a chart's own templates/ or examples/ directory and drop it from git.
+/*.key
+/*.pem
+/.env
+/.env.*
+/*secrets.values.yaml
+/*.local.yaml
+!/charts/*/examples/secrets.example.yaml
 
 # OS / editor
 .DS_Store
@@ -10,3 +15,5 @@ secrets/
 .idea/
 .vscode/
 
+# Packaged charts
+*.tgz

@@ -144,31 +144,28 @@ flowchart LR
 ## Repository Structure
 
 ```
-Woow_vpn_headscale_package/
+Woow_k3s_vpn_headscale_package/
 ├── README.md                     # This file
 ├── README_zh-TW.md               # Traditional Chinese documentation
-├── manifests/
-│   ├── tenant/                   # Per-tenant core stack
-│   │   ├── 01-namespace.yaml         # Tenant namespace
-│   │   ├── 02-headscale-cr.yaml      # Headscale CRD (v0.29.2, ACL, autoApprovers)
-│   │   ├── 03-headscale-user.yaml    # Default user
-│   │   ├── 05-headplane-secret.yaml  # Cookie secret (template)
-│   │   ├── 06-headplane-configmap.yaml
-│   │   ├── 07-headplane-deployment.yaml
-│   │   ├── 08-cloudflared-config-patch.yaml  # CF Tunnel routes (admin UI only)
-│   │   ├── 09-preauth-key.yaml       # Device PreAuthKey CRD
-│   │   └── 10-auto-approver.yaml     # Route auto-approval notes
-│   ├── services/                  # Demo workloads
-│   │   ├── 11-test-nginx.yaml
-│   │   ├── 20-ha-deploy.yaml         # Home Assistant container
-│   │   └── 21-odoo-deploy.yaml       # Odoo 18 + PostgreSQL 16
-│   └── vpn-proxy/                 # Service-to-VPN proxy pods
-│       ├── 12-proxy-preauth-key.yaml
-│       ├── 13-tailscale-proxy.yaml   # RBAC + proxy Deployment (nginx example)
-│       └── 22-vpn-proxy-ha-odoo.yaml # HA + Odoo proxies
+├── charts/
+│   ├── headscale-tenant/          # Helm chart: Headscale CR, users, PreAuthKeys,
+│   │   │                          #   optional AutoApprover, Headplane, Tailscale
+│   │   │                          #   proxies, LimitRange, NetworkPolicy, ingress
+│   │   ├── Chart.yaml
+│   │   ├── values.yaml
+│   │   ├── templates/
+│   │   └── deploy/<cluster>/*.yaml   # Instance values for a real install (no secrets)
+│   └── headscale-demo-services/   # Helm chart: nginx, Home Assistant, Odoo+Postgres
+│       ├── Chart.yaml
+│       ├── values.yaml
+│       ├── examples/secrets.example.yaml
+│       └── templates/
+├── manifests/                     # Original prototype (kept for history/reference —
+│                                   #   see docs/DEPLOYMENT-REPORT.md; superseded by charts/)
 ├── scripts/
-│   ├── deploy.sh                  # One-shot Phase 1-4 deployment (K8s)
-│   └── add-service-to-vpn.sh      # Add any Service to the tailnet
+│   ├── deploy.sh                  # Legacy one-shot script for manifests/
+│   ├── add-service-to-vpn.sh      # Legacy: add a Service to the tailnet
+│   └── functional-test.sh         # In-cluster tailnet join + reachability test
 └── docs/
     ├── DEPLOYMENT-REPORT.md       # Full deployment log with every issue + fix
     ├── EXTERNAL-ACCESS.md         # External connectivity options deep-dive
@@ -176,29 +173,32 @@ Woow_vpn_headscale_package/
     └── screenshots/               # UI screenshots
 ```
 
+Sibling repositories for the other deployment targets:
+
+- [`Woow_podman_vpn_headscale_package`](https://github.com/WOOWTECH/Woow_podman_vpn_headscale_package) — single-node Podman variant (no Kubernetes).
+- [`Woow_ha_vpn_headscale_package`](https://github.com/WOOWTECH/Woow_ha_vpn_headscale_package) — Home Assistant OS add-on variant.
+
 ---
 
 ## Installation
 
 ### Prerequisites
 
-- K3s / Kubernetes ≥ 1.25 with a default StorageClass
-- Helm ≥ 3.8 (OCI registry support)
-- `kubectl` access with cluster-admin
+- K3s / Kubernetes ≥ 1.27 with a StorageClass (defaults to `local-path`; override `storageClassName`)
+- Helm ≥ 3.19 (OCI registry support)
+- `kubectl` access to the target namespace
+- The [headscale-operator](https://github.com/infradohq/headscale-operator) installed cluster-wide (this repo does not install it — see Phase 1)
 
 ### Quick Start
 
 ```bash
-git clone -b k3s https://github.com/WOOWTECH/Woow_vpn_headscale_package.git
-cd Woow_vpn_headscale_package
-./scripts/deploy.sh
+git clone https://github.com/WOOWTECH/Woow_k3s_vpn_headscale_package.git
+cd Woow_k3s_vpn_headscale_package
 ```
 
-> Looking for the single-node **Podman** variant (no K8s)? Switch to the [`podman` branch](https://github.com/WOOWTECH/Woow_vpn_headscale_package/tree/podman).
+> Looking for the single-node **Podman** variant (no K8s)? See [`Woow_podman_vpn_headscale_package`](https://github.com/WOOWTECH/Woow_podman_vpn_headscale_package). Running on **Home Assistant OS**? See [`Woow_ha_vpn_headscale_package`](https://github.com/WOOWTECH/Woow_ha_vpn_headscale_package).
 
-### Manual Steps
-
-**Phase 1 — Operator**
+**Phase 1 — Operator** (once per cluster; skip if already installed)
 
 ```bash
 kubectl create ns headscale-system
@@ -211,47 +211,58 @@ kubectl get crd | grep headscale
 # headscales / headscaleusers / headscalepreauthkeys / headscaleautoapprovers
 ```
 
-**Phase 2 — Tenant Headscale**
-
-Edit `manifests/tenant/02-headscale-cr.yaml` (set your `server_url` and storage class), then:
+**Phase 2 — Tenant chart** (Headscale CR, Headplane, Tailscale proxies)
 
 ```bash
-kubectl apply -f manifests/tenant/01-namespace.yaml
-kubectl apply -f manifests/tenant/02-headscale-cr.yaml
-kubectl apply -f manifests/tenant/03-headscale-user.yaml
+helm install headscale-tenant charts/headscale-tenant \
+  -n tenant-local --create-namespace \
+  -f charts/headscale-tenant/deploy/local/headscale-tenant.yaml
 ```
 
-**Phase 3 — Headplane UI**
+Retrieve the auto-managed Headscale API key (used by Headplane) or the test device key:
 
 ```bash
-kubectl create secret generic headplane-secrets \
-  --from-literal=COOKIE_SECRET="$(openssl rand -hex 16)" -n tenant-test
-kubectl apply -f manifests/tenant/06-headplane-configmap.yaml
-kubectl apply -f manifests/tenant/07-headplane-deployment.yaml
+kubectl get secret headscale-api-key -n tenant-local -o jsonpath='{.data.api-key}' | base64 -d
+kubectl get secret headscale-tenant-test-device-preauth-key -n tenant-local -o jsonpath='{.data.key}' | base64 -d
 ```
 
-Login at the Headplane URL with the auto-managed API key:
+**Phase 3 — Demo services** (optional — nginx, Home Assistant, Odoo+Postgres to exercise the proxies)
 
 ```bash
-kubectl get secret headscale-api-key -n tenant-test -o jsonpath='{.data.api-key}' | base64 -d
+helm install headscale-demo-services charts/headscale-demo-services \
+  -n tenant-local \
+  -f charts/headscale-demo-services/deploy/local/headscale-demo-services.yaml \
+  --set secrets.create=true --set secrets.postgresPassword="$(openssl rand -hex 16)"
 ```
 
 **Phase 4 — Connect a device**
 
 ```bash
-kubectl apply -f manifests/tenant/09-preauth-key.yaml
-KEY=$(kubectl get secret test-device-preauth-key -n tenant-test -o jsonpath='{.data.key}' | base64 -d)
-# On the device:
+KEY=$(kubectl get secret headscale-tenant-test-device-preauth-key -n tenant-local -o jsonpath='{.data.key}' | base64 -d)
 tailscale up --login-server=https://<your-headscale-url> --authkey=$KEY
 ```
 
-**Phase 5 — Add a service to the VPN**
+**Verify**
 
 ```bash
-./scripts/add-service-to-vpn.sh <service-name> <namespace> [tailnet-hostname]
-# Example:
-./scripts/add-service-to-vpn.sh odoo tenant-test odoo
+helm test headscale-tenant -n tenant-local
+helm test headscale-demo-services -n tenant-local
+./scripts/functional-test.sh   # in-cluster client joins the tailnet and reaches every proxy
 ```
+
+**Uninstall** (data is kept — `keepOnUninstall: true` by default)
+
+```bash
+helm uninstall headscale-demo-services -n tenant-local
+helm uninstall headscale-tenant -n tenant-local
+# Namespace, PVCs and Secrets remain; delete by hand once you're sure:
+# kubectl delete ns tenant-local
+```
+
+**Add another service to the VPN**: add an entry to `proxies` in your instance
+values (name, hostname, targetService, targetNamespace, targetPort) and
+`helm upgrade`. Each proxy gets its own PreAuthKey, state Secret and
+ServiceAccount — no shared state between proxies.
 
 ---
 

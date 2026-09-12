@@ -35,7 +35,7 @@
 - **⚠️ 待辦**: 需在 Cloudflare Dashboard 新增 DNS CNAME records
 
 ### Phase 4 — PreAuthKey ✅
-- **Key**: `hskey-auth-yT1a_Ode64TP-...`（儲存在 Secret `test-device-preauth-key`）
+- **Key**: 儲存在 Secret `test-device-preauth-key`（金鑰本身不記錄在文件中，避免外洩）
 - **設定**: reusable, 72h 到期
 - **連線指令**: `tailscale up --login-server=https://vpn-test.woowtech.io --authkey=<key>`
 - **⚠️ 待 DNS 設定後才能實測外部連線**

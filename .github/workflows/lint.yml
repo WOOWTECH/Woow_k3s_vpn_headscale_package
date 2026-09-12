@@ -1,0 +1,230 @@
+name: chart
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch: {}
+
+env:
+  KUBECONFORM_VERSION: v0.6.7
+  KUBECONFORM_SHA256: 95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73
+  # CRD groups the headscale-operator owns; this repo does not install the
+  # operator or its CRDs, so kubeconform is told to skip these Kinds rather
+  # than shipping (and drifting from) a copy of their OpenAPI schemas.
+  OPERATOR_SKIP_KINDS: Headscale,HeadscaleUser,HeadscalePreAuthKey,HeadscaleAutoApprover
+
+jobs:
+  tenant-chart:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: charts/headscale-tenant
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: v3.19.5
+
+      - name: helm lint
+        run: |
+          helm lint .
+          helm lint . -f deploy/local/headscale-tenant.yaml
+          helm lint . --set autoApprover.enabled=true,autoApprover.routes[0].cidr=10.0.0.0/8,autoApprover.routes[0].tags[0]=tag:server
+          helm lint . --set headplane.ingress.enabled=true,headplane.ingress.host=admin.example.com
+
+      - name: helm template (every values combination)
+        run: |
+          mkdir -p /tmp/r
+          helm template headscale-tenant . -n tenant-local -f deploy/local/headscale-tenant.yaml > /tmp/r/local-instance.yaml
+          helm template headscale-tenant . -n tenant-local                                        > /tmp/r/defaults.yaml
+          helm template headscale-tenant .                                                        > /tmp/r/default-ns.yaml
+          helm template headscale-tenant . -n tenant-local \
+            --set networkPolicy.enabled=false,limitRange.enabled=false,tests.enabled=false,headplane.enabled=false \
+                                                                                                     > /tmp/r/minimal.yaml
+          # The shape of a test install on woow-k3s: own namespace, disposable storage.
+          helm template headscale-tenant . -n ht-headscale-tenant \
+            --set namespace.name=ht-headscale-tenant,storageClassName=longhorn-delete             > /tmp/r/test-install.yaml
+          wc -l /tmp/r/*.yaml
+
+      - name: Every template is tracked and renders
+        run: |
+          # An unanchored .gitignore pattern can silently drop a real template from git.
+          for f in $(find templates -type f -name '*.yaml'); do
+            git check-ignore --no-index -q "$f" && { echo "::error::$f is matched by .gitignore"; exit 1; }
+            grep -q "^# Source: headscale-tenant/$f\$" /tmp/r/*.yaml || { echo "::error::$f never renders"; exit 1; }
+          done
+          echo "every template is tracked and renders"
+
+      - name: Namespace equal to release namespace is never rendered
+        run: |
+          python3 - <<'PYEOF'
+          import sys, yaml
+          for d in yaml.safe_load_all(open("/tmp/r/defaults.yaml")):
+              if d and d["kind"] == "Namespace" and d["metadata"]["name"] == "tenant-local":
+                  sys.exit("the release namespace must never be rendered as a Namespace object")
+          print("release namespace not rendered")
+          PYEOF
+
+      - name: Keep policy on Namespace, PVCs and chart-created Secrets
+        run: |
+          python3 - <<'PYEOF'
+          import sys, yaml
+          bad = []
+          for d in yaml.safe_load_all(open("/tmp/r/default-ns.yaml")):
+              if d and d["kind"] in ("Namespace", "PersistentVolumeClaim", "Secret"):
+                  if (d["metadata"].get("annotations") or {}).get("helm.sh/resource-policy") != "keep":
+                      bad.append(f"{d['kind']}/{d['metadata']['name']} has no keep policy")
+          sys.exit("\n".join(bad)) if bad else print("keep policy present")
+          PYEOF
+
+      - name: Every proxy Role is scoped by resourceNames to its own state Secret
+        run: |
+          python3 - <<'PYEOF'
+          import sys, yaml
+          docs = [d for d in yaml.safe_load_all(open("/tmp/r/defaults.yaml")) if d]
+          roles = [d for d in docs if d["kind"] == "Role" and d["metadata"]["name"].startswith("headscale-tenant-proxy-")]
+          assert roles, "no per-proxy Roles rendered"
+          bad = []
+          for r in roles:
+              scoped = [ru for ru in r["rules"] if ru["resources"] == ["secrets"] and "resourceNames" in ru]
+              if not scoped:
+                  bad.append(f"{r['metadata']['name']}: no resourceNames-scoped secrets rule")
+                  continue
+              for ru in scoped:
+                  if "create" in ru["verbs"]:
+                      bad.append(f"{r['metadata']['name']}: create verb must not carry resourceNames")
+          # No proxy Role or ServiceAccount may be shared between proxies.
+          names = [r["metadata"]["name"] for r in roles]
+          if len(names) != len(set(names)):
+              bad.append("duplicate proxy Role names")
+          sys.exit("\n".join(bad)) if bad else print(f"{len(roles)} proxy Roles correctly scoped")
+          PYEOF
+
+      - name: No proxy hardcodes a ClusterIP or runs :latest
+        run: |
+          if grep -RE 'TS_DEST_IP' templates/ ; then echo "::error::TS_DEST_IP (hardcoded ClusterIP forwarding) must not be used"; exit 1; fi
+          if grep -RE ':latest"?$' values.yaml ; then echo "::error::values.yaml pins an image to :latest"; exit 1; fi
+          echo "no hardcoded ClusterIP forwarding, no :latest tags"
+
+      - name: No shared cloudflared ConfigMap is touched
+        run: |
+          if grep -RIl "cloudflared" templates/ ; then echo "::error::this chart must never render anything named/labeled cloudflared"; exit 1; fi
+          echo "no cloudflared object rendered"
+
+      - name: No secret committed
+        run: |
+          python3 - <<'PYEOF'
+          import glob, sys, yaml
+          bad = []
+          for f in glob.glob("deploy/**/*.yaml", recursive=True):
+              v = yaml.safe_load(open(f)) or {}
+              if "secrets" in v:
+                  bad.append(f"{f}: instance values must not carry a secrets: block")
+          for f in ("/tmp/r/defaults.yaml", "/tmp/r/local-instance.yaml"):
+              for d in yaml.safe_load_all(open(f)):
+                  if d and d["kind"] == "Secret" and d["metadata"]["name"] != "headplane-secrets":
+                      bad.append(f"{f}: unexpected Secret {d['metadata']['name']} (this chart only ever creates headplane-secrets)")
+          sys.exit("\n".join(bad)) if bad else print("no secret committed")
+          PYEOF
+
+      - name: kubeconform (schema validation, operator CRD kinds skipped)
+        run: |
+          curl -sSLo /tmp/kc.tgz https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz
+          echo "${KUBECONFORM_SHA256}  /tmp/kc.tgz" | sha256sum -c -
+          tar -xzf /tmp/kc.tgz -C /usr/local/bin kubeconform
+          kubeconform -strict -summary -skip "${OPERATOR_SKIP_KINDS}" /tmp/r/*.yaml
+
+  demo-services-chart:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: charts/headscale-demo-services
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: v3.19.5
+
+      - name: helm lint
+        run: |
+          helm lint .
+          helm lint . -f deploy/local/headscale-demo-services.yaml --set secrets.postgresPassword=x
+          helm lint . --set secrets.create=true,secrets.postgresPassword=x
+
+      - name: helm template (every values combination)
+        run: |
+          mkdir -p /tmp/r2
+          helm template headscale-demo-services . -n tenant-local -f deploy/local/headscale-demo-services.yaml --set secrets.postgresPassword=x > /tmp/r2/local-instance.yaml
+          helm template headscale-demo-services . -n tenant-local --set secrets.create=true,secrets.postgresPassword=x > /tmp/r2/secrets.yaml
+          helm template headscale-demo-services .                --set secrets.create=true,secrets.postgresPassword=x > /tmp/r2/default-ns.yaml
+          helm template headscale-demo-services . -n tenant-local --set odoo.enabled=false,homeassistant.enabled=false > /tmp/r2/minimal.yaml
+          wc -l /tmp/r2/*.yaml
+
+      - name: Every template is tracked and renders
+        run: |
+          for f in $(find templates -type f -name '*.yaml'); do
+            git check-ignore --no-index -q "$f" && { echo "::error::$f is matched by .gitignore"; exit 1; }
+            grep -q "^# Source: headscale-demo-services/$f\$" /tmp/r2/*.yaml || { echo "::error::$f never renders"; exit 1; }
+          done
+          echo "every template is tracked and renders"
+
+      - name: secrets.create is required() guarded
+        run: |
+          if helm template . --set secrets.create=true > /dev/null 2>&1; then
+            echo "::error::secrets.create=true rendered without secrets.postgresPassword"; exit 1
+          fi
+          out=$(helm template . --set secrets.create=true 2>&1) || true
+          echo "$out" | grep -q "secrets.postgresPassword is required" || { echo "::error::wrong/missing required() message: $out"; exit 1; }
+          echo "required() guard fires"
+
+      - name: Keep policy on PVCs and chart-created Secrets
+        run: |
+          python3 - <<'PYEOF'
+          import sys, yaml
+          bad = []
+          for d in yaml.safe_load_all(open("/tmp/r2/secrets.yaml")):
+              if d and d["kind"] in ("PersistentVolumeClaim", "Secret"):
+                  if (d["metadata"].get("annotations") or {}).get("helm.sh/resource-policy") != "keep":
+                      bad.append(f"{d['kind']}/{d['metadata']['name']} has no keep policy")
+          sys.exit("\n".join(bad)) if bad else print("keep policy present")
+          PYEOF
+
+      - name: No secret committed
+        run: |
+          python3 - <<'PYEOF'
+          import sys, yaml
+          v = yaml.safe_load(open("values.yaml"))["secrets"]
+          bad = [k for k, val in v.items() if k != "create" and val]
+          for f in ("/tmp/r2/local-instance.yaml",):
+              for d in yaml.safe_load_all(open(f)):
+                  if d and d["kind"] == "Secret":
+                      bad.append(f"{f} must not contain a Secret with secrets.create=false")
+          for d in yaml.safe_load_all(open("examples/secrets.example.yaml")):
+              for k, val in ((d or {}).get("stringData") or {}).items():
+                  if k not in ("POSTGRES_USER", "POSTGRES_DB") and "REPLACE_ME" not in str(val):
+                      bad.append(f"examples/secrets.example.yaml: {k} is not a placeholder")
+          sys.exit("\n".join(bad)) if bad else print("no secret committed")
+          PYEOF
+
+      - name: kubeconform (schema validation)
+        run: |
+          curl -sSLo /tmp/kc2.tgz https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz
+          echo "${KUBECONFORM_SHA256}  /tmp/kc2.tgz" | sha256sum -c -
+          tar -xzf /tmp/kc2.tgz -C /usr/local/bin kubeconform
+          kubeconform -strict -summary /tmp/r2/*.yaml
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n on every script
+        run: |
+          for f in scripts/*.sh; do bash -n "$f"; done
+      - name: shellcheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: './scripts'

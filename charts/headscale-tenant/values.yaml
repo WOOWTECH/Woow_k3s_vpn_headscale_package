@@ -176,6 +176,10 @@ limitRange:
 
 networkPolicy:
   enabled: true
+  # Namespace the headscale-operator runs in. Ingress to Headscale's control
+  # ports is allowed from this namespace AND the tenant namespace above —
+  # never from this namespace alone, or the operator itself gets locked out.
+  operatorNamespace: headscale-system
 
 tests:
   enabled: true

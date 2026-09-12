@@ -2,9 +2,13 @@
 Egress is left open (DERP/STUN and the public internet are reachable from
 every pod) — Tailscale proxies and Headscale itself need arbitrary outbound
 reachability and this is a demo/test tenant, not a hardened one. Ingress is
-scoped: only pods in this namespace may reach Headscale's control ports, and
-Headplane is open to the namespace (front it with your own Ingress/tunnel
-auth for real exposure).
+scoped to this namespace PLUS the headscale-operator's namespace: the
+operator (running in operatorNamespace, cluster-wide, outside this tenant)
+must reach Headscale's gRPC port to create Users/PreAuthKeys/API keys — a
+namespace-only policy here would silently stall every HeadscaleUser and
+HeadscalePreAuthKey with "connection refused" while pods inside this
+namespace connect just fine, which is exactly the trap. Headplane is open to
+the namespace (front it with your own Ingress/tunnel auth for real exposure).
 */ -}}
 {{- if .Values.networkPolicy.enabled }}
 apiVersion: networking.k8s.io/v1
@@ -26,6 +30,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ include "headscale-tenant.ns" . }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.operatorNamespace }}
       ports:
         - protocol: TCP
           port: 8080

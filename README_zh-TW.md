@@ -144,31 +144,28 @@ flowchart LR
 ## 倉庫結構
 
 ```
-Woow_vpn_headscale_package/
+Woow_k3s_vpn_headscale_package/
 ├── README.md                     # 英文文件
 ├── README_zh-TW.md               # 本文件
-├── manifests/
-│   ├── tenant/                   # 每租戶核心堆疊
-│   │   ├── 01-namespace.yaml         # 租戶 namespace
-│   │   ├── 02-headscale-cr.yaml      # Headscale CRD（v0.29.2、ACL、autoApprovers）
-│   │   ├── 03-headscale-user.yaml    # 預設使用者
-│   │   ├── 05-headplane-secret.yaml  # Cookie secret（模板）
-│   │   ├── 06-headplane-configmap.yaml
-│   │   ├── 07-headplane-deployment.yaml
-│   │   ├── 08-cloudflared-config-patch.yaml  # CF Tunnel 路由（僅管理介面）
-│   │   ├── 09-preauth-key.yaml       # 裝置 PreAuthKey CRD
-│   │   └── 10-auto-approver.yaml     # 路由自動核准說明
-│   ├── services/                  # 示範工作負載
-│   │   ├── 11-test-nginx.yaml
-│   │   ├── 20-ha-deploy.yaml         # Home Assistant 容器
-│   │   └── 21-odoo-deploy.yaml       # Odoo 18 + PostgreSQL 16
-│   └── vpn-proxy/                 # 服務接入 VPN 的 proxy pods
-│       ├── 12-proxy-preauth-key.yaml
-│       ├── 13-tailscale-proxy.yaml   # RBAC + proxy Deployment（nginx 範例）
-│       └── 22-vpn-proxy-ha-odoo.yaml # HA + Odoo proxies
+├── charts/
+│   ├── headscale-tenant/          # Helm chart：Headscale CR、users、PreAuthKeys、
+│   │   │                          #   optional AutoApprover、Headplane、Tailscale
+│   │   │                          #   proxies、LimitRange、NetworkPolicy、ingress
+│   │   ├── Chart.yaml
+│   │   ├── values.yaml
+│   │   ├── templates/
+│   │   └── deploy/<cluster>/*.yaml   # 實際安裝用的 instance values（不含機密）
+│   └── headscale-demo-services/   # Helm chart：nginx、Home Assistant、Odoo+Postgres
+│       ├── Chart.yaml
+│       ├── values.yaml
+│       ├── examples/secrets.example.yaml
+│       └── templates/
+├── manifests/                     # 原始 prototype（保留供歷史參考 — 見
+│                                   #   docs/DEPLOYMENT-REPORT.md；已由 charts/ 取代）
 ├── scripts/
-│   ├── deploy.sh                  # Phase 1-4 一鍵部署（K8s）
-│   └── add-service-to-vpn.sh      # 把任意 Service 加入 tailnet
+│   ├── deploy.sh                  # 舊版 manifests/ 一鍵部署腳本
+│   ├── add-service-to-vpn.sh      # 舊版：把任意 Service 加入 tailnet
+│   └── functional-test.sh         # 叢集內加入 tailnet + 連線測試
 └── docs/
     ├── DEPLOYMENT-REPORT.md       # 完整部署紀錄（所有問題 + 解法）
     ├── EXTERNAL-ACCESS.md         # 外部連線方案深度分析
@@ -176,29 +173,32 @@ Woow_vpn_headscale_package/
     └── screenshots/               # 介面截圖
 ```
 
+其他部署目標的姊妹倉庫：
+
+- [`Woow_podman_vpn_headscale_package`](https://github.com/WOOWTECH/Woow_podman_vpn_headscale_package) — 單機 Podman 版（免 Kubernetes）。
+- [`Woow_ha_vpn_headscale_package`](https://github.com/WOOWTECH/Woow_ha_vpn_headscale_package) — Home Assistant OS Add-on 版。
+
 ---
 
 ## 安裝
 
 ### 前置需求
 
-- K3s / Kubernetes ≥ 1.25，且有預設 StorageClass
-- Helm ≥ 3.8（支援 OCI registry）
-- cluster-admin 權限的 `kubectl`
+- K3s / Kubernetes ≥ 1.27，且有 StorageClass（預設 `local-path`；可用 `storageClassName` 覆寫）
+- Helm ≥ 3.19（支援 OCI registry）
+- 對目標 namespace 有存取權的 `kubectl`
+- 叢集已安裝 [headscale-operator](https://github.com/infradohq/headscale-operator)（本倉庫不安裝 operator — 見 Phase 1）
 
 ### 快速開始
 
 ```bash
-git clone -b k3s https://github.com/WOOWTECH/Woow_vpn_headscale_package.git
-cd Woow_vpn_headscale_package
-./scripts/deploy.sh
+git clone https://github.com/WOOWTECH/Woow_k3s_vpn_headscale_package.git
+cd Woow_k3s_vpn_headscale_package
 ```
 
-> 需要單機 **Podman** 版（免 K8s）？請切換到 [`podman` 分支](https://github.com/WOOWTECH/Woow_vpn_headscale_package/tree/podman)。
+> 需要單機 **Podman** 版（免 K8s）？見 [`Woow_podman_vpn_headscale_package`](https://github.com/WOOWTECH/Woow_podman_vpn_headscale_package)。跑在 **Home Assistant OS** 上？見 [`Woow_ha_vpn_headscale_package`](https://github.com/WOOWTECH/Woow_ha_vpn_headscale_package)。
 
-### 手動步驟
-
-**Phase 1 — Operator**
+**Phase 1 — Operator**（每個叢集裝一次；已裝過可跳過）
 
 ```bash
 kubectl create ns headscale-system
@@ -211,47 +211,57 @@ kubectl get crd | grep headscale
 # headscales / headscaleusers / headscalepreauthkeys / headscaleautoapprovers
 ```
 
-**Phase 2 — 租戶 Headscale**
-
-編輯 `manifests/tenant/02-headscale-cr.yaml`（設定你的 `server_url` 與 storage class），然後：
+**Phase 2 — 租戶 chart**（Headscale CR、Headplane、Tailscale proxies）
 
 ```bash
-kubectl apply -f manifests/tenant/01-namespace.yaml
-kubectl apply -f manifests/tenant/02-headscale-cr.yaml
-kubectl apply -f manifests/tenant/03-headscale-user.yaml
+helm install headscale-tenant charts/headscale-tenant \
+  -n tenant-local --create-namespace \
+  -f charts/headscale-tenant/deploy/local/headscale-tenant.yaml
 ```
 
-**Phase 3 — Headplane UI**
+取得自動管理的 Headscale API key（Headplane 使用）或測試裝置金鑰：
 
 ```bash
-kubectl create secret generic headplane-secrets \
-  --from-literal=COOKIE_SECRET="$(openssl rand -hex 16)" -n tenant-test
-kubectl apply -f manifests/tenant/06-headplane-configmap.yaml
-kubectl apply -f manifests/tenant/07-headplane-deployment.yaml
+kubectl get secret headscale-api-key -n tenant-local -o jsonpath='{.data.api-key}' | base64 -d
+kubectl get secret headscale-tenant-test-device-preauth-key -n tenant-local -o jsonpath='{.data.key}' | base64 -d
 ```
 
-用自動管理的 API key 登入 Headplane：
+**Phase 3 — Demo 服務**（選用 — nginx、Home Assistant、Odoo+Postgres，用來驗證 proxies）
 
 ```bash
-kubectl get secret headscale-api-key -n tenant-test -o jsonpath='{.data.api-key}' | base64 -d
+helm install headscale-demo-services charts/headscale-demo-services \
+  -n tenant-local \
+  -f charts/headscale-demo-services/deploy/local/headscale-demo-services.yaml \
+  --set secrets.create=true --set secrets.postgresPassword="$(openssl rand -hex 16)"
 ```
 
 **Phase 4 — 裝置連線**
 
 ```bash
-kubectl apply -f manifests/tenant/09-preauth-key.yaml
-KEY=$(kubectl get secret test-device-preauth-key -n tenant-test -o jsonpath='{.data.key}' | base64 -d)
-# 在裝置上執行：
+KEY=$(kubectl get secret headscale-tenant-test-device-preauth-key -n tenant-local -o jsonpath='{.data.key}' | base64 -d)
 tailscale up --login-server=https://<你的-headscale-網址> --authkey=$KEY
 ```
 
-**Phase 5 — 服務接入 VPN**
+**驗證**
 
 ```bash
-./scripts/add-service-to-vpn.sh <service名稱> <namespace> [tailnet主機名]
-# 範例：
-./scripts/add-service-to-vpn.sh odoo tenant-test odoo
+helm test headscale-tenant -n tenant-local
+helm test headscale-demo-services -n tenant-local
+./scripts/functional-test.sh   # 叢集內用戶端加入 tailnet 並連到每個 proxy
 ```
+
+**移除**（資料會保留 — 預設 `keepOnUninstall: true`）
+
+```bash
+helm uninstall headscale-demo-services -n tenant-local
+helm uninstall headscale-tenant -n tenant-local
+# namespace、PVC、Secret 都會保留，確定不需要後再手動刪除：
+# kubectl delete ns tenant-local
+```
+
+**把其他服務接入 VPN**：在你的 instance values 的 `proxies` 加一筆（name、hostname、
+targetService、targetNamespace、targetPort），再 `helm upgrade`。每個 proxy 都有
+自己的 PreAuthKey、state Secret 與 ServiceAccount — 彼此狀態互不共用。
 
 ---
 
