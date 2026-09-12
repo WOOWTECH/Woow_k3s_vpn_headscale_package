@@ -40,6 +40,10 @@ spec:
           value: "true"
         - name: TS_EXTRA_ARGS
           value: "--login-server=http://headscale.${NAMESPACE}.svc.cluster.local:8080"
+        - name: TS_STATE_DIR
+          value: "/tmp/tsstate"
+        - name: TS_KUBE_SECRET
+          value: ""
       resources:
         requests: {cpu: 20m, memory: 32Mi}
         limits: {cpu: 200m, memory: 128Mi}
