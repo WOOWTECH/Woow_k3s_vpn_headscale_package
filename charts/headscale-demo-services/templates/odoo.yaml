@@ -1,0 +1,177 @@
+{{- if .Values.odoo.enabled }}
+{{- if .Values.secrets.create }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: odoo-db-secret
+  namespace: {{ include "headscale-demo-services.ns" . }}
+  labels:
+    app: odoo
+    {{- include "headscale-demo-services.partOf" . | nindent 4 }}
+  {{- include "headscale-demo-services.keepAnnotations" . | nindent 2 }}
+type: Opaque
+stringData:
+  POSTGRES_USER: "odoo"
+  POSTGRES_PASSWORD: {{ required "secrets.postgresPassword is required when secrets.create=true" .Values.secrets.postgresPassword | quote }}
+  POSTGRES_DB: "postgres"
+---
+{{- end }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: odoo-data
+  namespace: {{ include "headscale-demo-services.ns" . }}
+  labels:
+    app: odoo
+    {{- include "headscale-demo-services.partOf" . | nindent 4 }}
+  {{- include "headscale-demo-services.keepAnnotations" . | nindent 2 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ .Values.storageClassName | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.odoo.storage.size | quote }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: odoo-db-data
+  namespace: {{ include "headscale-demo-services.ns" . }}
+  labels:
+    app: odoo
+    {{- include "headscale-demo-services.partOf" . | nindent 4 }}
+  {{- include "headscale-demo-services.keepAnnotations" . | nindent 2 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ .Values.storageClassName | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.odoo.postgres.storage.size | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: odoo
+  namespace: {{ include "headscale-demo-services.ns" . }}
+  labels:
+    app: odoo
+    {{- include "headscale-demo-services.partOf" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: odoo
+  template:
+    metadata:
+      labels:
+        app: odoo
+    spec:
+      containers:
+        - name: odoo
+          image: "{{ .Values.odoo.image.repository }}:{{ .Values.odoo.image.tag }}"
+          ports:
+            - containerPort: 8069
+          env:
+            - name: HOST
+              value: odoo-db
+            - name: USER
+              valueFrom:
+                secretKeyRef:
+                  name: odoo-db-secret
+                  key: POSTGRES_USER
+            - name: PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: odoo-db-secret
+                  key: POSTGRES_PASSWORD
+          volumeMounts:
+            - name: odoo-data
+              mountPath: /var/lib/odoo
+            - name: odoo-addons
+              mountPath: /mnt/extra-addons
+          resources:
+            {{- toYaml .Values.odoo.resources | nindent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: 8069
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 18
+        - name: postgres
+          image: "{{ .Values.odoo.postgres.image.repository }}:{{ .Values.odoo.postgres.image.tag }}"
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: odoo-db-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: odoo-db-secret
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: odoo-db-secret
+                  key: POSTGRES_DB
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: pg-data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            {{- toYaml .Values.odoo.postgres.resources | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "odoo"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: odoo-data
+          persistentVolumeClaim:
+            claimName: odoo-data
+        - name: odoo-addons
+          emptyDir: {}
+        - name: pg-data
+          persistentVolumeClaim:
+            claimName: odoo-db-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: odoo-db
+  namespace: {{ include "headscale-demo-services.ns" . }}
+  labels:
+    app: odoo
+    {{- include "headscale-demo-services.partOf" . | nindent 4 }}
+spec:
+  selector:
+    app: odoo
+  ports:
+    - port: 5432
+      targetPort: 5432
+      name: postgres
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: odoo
+  namespace: {{ include "headscale-demo-services.ns" . }}
+  labels:
+    app: odoo
+    {{- include "headscale-demo-services.partOf" . | nindent 4 }}
+spec:
+  selector:
+    app: odoo
+  ports:
+    - port: 8069
+      targetPort: 8069
+      name: http
+  type: ClusterIP
+{{- end }}

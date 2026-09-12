@@ -1,0 +1,7 @@
+headscale-demo-services "{{ .Release.Name }}" deployed to namespace {{ include "headscale-demo-services.ns" . }}.
+
+These are internal-only (ClusterIP) — reach them through a headscale-tenant
+proxy on the tailnet, not directly.
+
+Run the chart's smoke test:
+  helm test {{ .Release.Name }} -n {{ include "headscale-demo-services.ns" . }}

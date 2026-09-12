@@ -1,0 +1,54 @@
+{{- /*
+Egress is left open (DERP/STUN and the public internet are reachable from
+every pod) — Tailscale proxies and Headscale itself need arbitrary outbound
+reachability and this is a demo/test tenant, not a hardened one. Ingress is
+scoped: only pods in this namespace may reach Headscale's control ports, and
+Headplane is open to the namespace (front it with your own Ingress/tunnel
+auth for real exposure).
+*/ -}}
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-headscale-ingress
+  namespace: {{ include "headscale-tenant.ns" . }}
+  labels:
+    {{- include "headscale-tenant.partOf" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: headscale
+      app.kubernetes.io/instance: {{ .Values.headscale.name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "headscale-tenant.ns" . }}
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 50443
+        - protocol: TCP
+          port: 9090
+{{- if .Values.headplane.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-headplane-ingress
+  namespace: {{ include "headscale-tenant.ns" . }}
+  labels:
+    {{- include "headscale-tenant.partOf" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app: headplane
+  policyTypes:
+    - Ingress
+  ingress:
+    - {}
+{{- end }}
+{{- end }}

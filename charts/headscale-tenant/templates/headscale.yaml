@@ -1,0 +1,92 @@
+{{- /*
+The Headscale CR itself, reconciled by the headscale-operator. This chart
+does not install the operator or its CRDs.
+*/ -}}
+apiVersion: headscale.infrado.cloud/v1beta1
+kind: Headscale
+metadata:
+  name: {{ .Values.headscale.name }}
+  namespace: {{ include "headscale-tenant.ns" . }}
+  labels:
+    {{- include "headscale-tenant.partOf" . | nindent 4 }}
+spec:
+  version: {{ .Values.headscale.version | quote }}
+  replicas: {{ .Values.headscale.replicas }}
+  persistent_volume_claim:
+    size: {{ .Values.headscale.pvcSize | quote }}
+    storage_class_name: {{ .Values.storageClassName | quote }}
+  api_key:
+    auto_manage: {{ .Values.headscale.apiKey.autoManage }}
+    expiration: {{ .Values.headscale.apiKey.expiration | quote }}
+    rotation_buffer: {{ .Values.headscale.apiKey.rotationBuffer | quote }}
+  acl_policy:
+    inline: |
+      {{- .Values.headscale.aclPolicyInline | nindent 6 }}
+  config:
+    server_url: {{ .Values.headscale.serverUrl | quote }}
+    listen_addr: "0.0.0.0:8080"
+    grpc_listen_addr: "0.0.0.0:50443"
+    grpc_allow_insecure: true
+    metrics_listen_addr: "0.0.0.0:9090"
+    noise:
+      private_key_path: /var/lib/headscale/noise_private.key
+    database:
+      type: sqlite
+      sqlite:
+        path: /var/lib/headscale/db.sqlite
+    prefixes:
+      v4: {{ .Values.headscale.prefixes.v4 | quote }}
+      v6: {{ .Values.headscale.prefixes.v6 | quote }}
+    derp:
+      server:
+        enabled: false
+      urls:
+        - "https://controlplane.tailscale.com/derpmap/default"
+    dns:
+      magic_dns: true
+      base_domain: {{ .Values.headscale.baseDomain | quote }}
+      nameservers:
+        global:
+          {{- range .Values.headscale.nameservers }}
+          - {{ . | quote }}
+          {{- end }}
+    policy:
+      mode: database
+    log:
+      level: {{ .Values.headscale.logLevel | quote }}
+---
+{{- range .Values.users }}
+apiVersion: headscale.infrado.cloud/v1beta1
+kind: HeadscaleUser
+metadata:
+  name: {{ .name }}
+  namespace: {{ include "headscale-tenant.ns" $ }}
+  labels:
+    {{- include "headscale-tenant.partOf" $ | nindent 4 }}
+spec:
+  headscaleRef: {{ $.Values.headscale.name }}
+  username: {{ .username }}
+  {{- with .displayName }}
+  displayName: {{ . | quote }}
+  {{- end }}
+---
+{{- end }}
+{{- if .Values.autoApprover.enabled }}
+apiVersion: headscale.infrado.cloud/v1beta1
+kind: HeadscaleAutoApprover
+metadata:
+  name: {{ .Values.headscale.name }}-auto-approver
+  namespace: {{ include "headscale-tenant.ns" . }}
+  labels:
+    {{- include "headscale-tenant.partOf" . | nindent 4 }}
+spec:
+  headscaleRef: {{ .Values.headscale.name }}
+  {{- with .Values.autoApprover.routes }}
+  routes:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.autoApprover.exitNodeTags }}
+  exitNodeTags:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

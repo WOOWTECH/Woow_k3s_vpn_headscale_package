@@ -1,0 +1,154 @@
+{{- /*
+Tailscale proxies. Fixes vs. the manifests/ prototype:
+  - one ServiceAccount + Role per proxy; the Role's get/update/patch on
+    Secrets is limited by resourceNames to that proxy's own state Secret
+    (the "create" verb cannot carry resourceNames — Kubernetes never
+    evaluates it for a collection POST — so it stays unrestricted, scoped
+    only by the Role's own namespace).
+  - userspace networking (TS_USERSPACE=true): no NET_ADMIN capability, no
+    /dev/net/tun hostPath.
+  - forwarding is TS_SERVE_CONFIG raw-TCP-forward by Kubernetes Service DNS
+    name (never a hardcoded ClusterIP), so it survives the Service being
+    recreated with a new ClusterIP.
+  - each proxy's TS_KUBE_SECRET is its own uniquely-named Secret, so a
+    restart reuses the same tailnet identity instead of colliding with
+    another proxy's state.
+  - image tag is pinned (proxyImage.tag), never :latest.
+*/ -}}
+{{- range .Values.proxies }}
+{{- $proxy := . }}
+{{- $stateSecret := include "headscale-tenant.proxyStateSecret" (list $ $proxy) }}
+{{- $preauthSecret := include "headscale-tenant.proxyPreAuthSecret" (list $ $proxy) }}
+{{- $sa := include "headscale-tenant.proxySA" (list $ $proxy) }}
+{{- $backend := printf "%s.%s.svc.cluster.local:%d" $proxy.targetService $proxy.targetNamespace (int $proxy.targetPort) }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $sa }}
+  namespace: {{ include "headscale-tenant.ns" $ }}
+  labels:
+    app: tailscale-proxy-{{ $proxy.name }}
+    {{- include "headscale-tenant.partOf" $ | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $sa }}
+  namespace: {{ include "headscale-tenant.ns" $ }}
+  labels:
+    app: tailscale-proxy-{{ $proxy.name }}
+    {{- include "headscale-tenant.partOf" $ | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ $stateSecret | quote }}]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $sa }}
+  namespace: {{ include "headscale-tenant.ns" $ }}
+  labels:
+    app: tailscale-proxy-{{ $proxy.name }}
+    {{- include "headscale-tenant.partOf" $ | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ include "headscale-tenant.ns" $ }}
+roleRef:
+  kind: Role
+  name: {{ $sa }}
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $.Release.Name }}-tailscale-proxy-{{ $proxy.name }}-serve
+  namespace: {{ include "headscale-tenant.ns" $ }}
+  labels:
+    app: tailscale-proxy-{{ $proxy.name }}
+    {{- include "headscale-tenant.partOf" $ | nindent 4 }}
+data:
+  serve-config.json: |
+    {"TCP":{"{{ $proxy.targetPort }}":{"TCPForward":"{{ $backend }}"}}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tailscale-proxy-{{ $proxy.name }}
+  namespace: {{ include "headscale-tenant.ns" $ }}
+  labels:
+    app: tailscale-proxy-{{ $proxy.name }}
+    {{- include "headscale-tenant.partOf" $ | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tailscale-proxy-{{ $proxy.name }}
+  template:
+    metadata:
+      labels:
+        app: tailscale-proxy-{{ $proxy.name }}
+      annotations:
+        checksum/serve-config: {{ printf "%s" $backend | sha256sum }}
+    spec:
+      serviceAccountName: {{ $sa }}
+      containers:
+        - name: tailscale
+          image: "{{ $.Values.proxyImage.repository }}:{{ $.Values.proxyImage.tag }}"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $preauthSecret }}
+                  key: key
+            - name: TS_HOSTNAME
+              value: {{ $proxy.hostname | quote }}
+            - name: TS_STATE_DIR
+              value: "/var/lib/tailscale"
+            - name: TS_EXTRA_ARGS
+              value: {{ printf "--login-server=http://%s:8080" (include "headscale-tenant.headscaleSvc" $) | quote }}
+            - name: TS_USERSPACE
+              value: "true"
+            - name: TS_SERVE_CONFIG
+              value: "/etc/tailscale/serve-config.json"
+            - name: TS_KUBE_SECRET
+              value: {{ $stateSecret | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+          resources:
+            {{- toYaml $.Values.proxyResources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: false
+            runAsNonRoot: false
+          volumeMounts:
+            - name: tailscale-state
+              mountPath: /var/lib/tailscale
+            - name: serve-config
+              mountPath: /etc/tailscale
+              readOnly: true
+      volumes:
+        - name: tailscale-state
+          emptyDir: {}
+        - name: serve-config
+          configMap:
+            name: {{ $.Release.Name }}-tailscale-proxy-{{ $proxy.name }}-serve
+---
+{{- end }}

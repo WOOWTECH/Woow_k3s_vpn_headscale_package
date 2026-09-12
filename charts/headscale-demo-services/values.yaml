@@ -1,0 +1,79 @@
+# Default values for the headscale-demo-services chart.
+# Disposable demo workloads exercised through a headscale-tenant install's
+# Tailscale proxies. Never expose these directly (no Ingress, no NodePort).
+
+namespace:
+  # These demos are meant to live in the same namespace as the
+  # headscale-tenant release that proxies them; that chart creates it, so
+  # this one does not by default.
+  create: false
+  name: tenant-local
+
+keepOnUninstall: true
+storageClassName: local-path
+
+nginx:
+  enabled: true
+  image:
+    repository: nginx
+    tag: "1.27-alpine"
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+homeassistant:
+  enabled: true
+  image:
+    repository: ghcr.io/home-assistant/home-assistant
+    tag: "2026.8.3"
+  storage:
+    size: 1Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+odoo:
+  enabled: true
+  image:
+    repository: odoo
+    tag: "18.0"
+  storage:
+    size: 2Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  postgres:
+    image:
+      repository: postgres
+      tag: "16-alpine"
+    storage:
+      size: 2Gi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+secrets:
+  # false (default): odoo-db-secret already exists (see
+  #   examples/secrets.example.yaml). true: render it from postgresPassword
+  #   below (fresh installs, tests).
+  create: false
+  postgresPassword: ""
+
+tests:
+  enabled: true

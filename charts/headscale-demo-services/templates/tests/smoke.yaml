@@ -1,0 +1,42 @@
+{{- if .Values.tests.enabled }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Release.Name }}-smoke
+  namespace: {{ include "headscale-demo-services.ns" . }}
+  labels:
+    {{- include "headscale-demo-services.partOf" . | nindent 4 }}
+    app.kubernetes.io/component: smoke-test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  restartPolicy: Never
+  containers:
+    - name: smoke
+      image: curlimages/curl:8.11.1
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -eu
+          {{- if .Values.nginx.enabled }}
+          curl -sf --max-time 5 http://test-nginx.{{ include "headscale-demo-services.ns" . }}.svc.cluster.local:80/ > /dev/null
+          echo "OK: test-nginx"
+          {{- end }}
+          {{- if .Values.homeassistant.enabled }}
+          curl -s -o /dev/null --max-time 5 http://homeassistant.{{ include "headscale-demo-services.ns" . }}.svc.cluster.local:8123/
+          echo "OK: homeassistant responds"
+          {{- end }}
+          {{- if .Values.odoo.enabled }}
+          curl -s -o /dev/null --max-time 5 http://odoo.{{ include "headscale-demo-services.ns" . }}.svc.cluster.local:8069/web/login
+          echo "OK: odoo responds"
+          {{- end }}
+          echo "SMOKE OK"
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 200m
+          memory: 64Mi
+{{- end }}

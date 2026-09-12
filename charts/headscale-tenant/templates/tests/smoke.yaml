@@ -1,0 +1,48 @@
+{{- /*
+`helm test` smoke pod, read-only: Headscale's own /health endpoint returns
+200, and Headplane's TCP port accepts a connection. Does not attempt an
+actual tailnet join (that needs a real device identity outside the cluster
+network context of a hook pod) — see scripts/functional-test.sh for the full
+in-cluster tailnet join test used by this repo's self-test, run separately
+from `helm test`.
+*/ -}}
+{{- if .Values.tests.enabled }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ .Release.Name }}-smoke
+  namespace: {{ include "headscale-tenant.ns" . }}
+  labels:
+    {{- include "headscale-tenant.partOf" . | nindent 4 }}
+    app.kubernetes.io/component: smoke-test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  restartPolicy: Never
+  containers:
+    - name: smoke
+      image: curlimages/curl:8.11.1
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -eu
+          echo "-> headscale health"
+          code=$(curl -s -o /dev/null -w '%{http_code}' "http://{{ include "headscale-tenant.headscaleSvc" . }}:8080/health")
+          [ "$code" = "200" ] || { echo "headscale /health returned $code"; exit 1; }
+          echo "OK: headscale /health = 200"
+          {{- if .Values.headplane.enabled }}
+          echo "-> headplane tcp"
+          curl -s -o /dev/null --max-time 5 "http://headplane.{{ include "headscale-tenant.ns" . }}.svc.cluster.local:3000/" \
+            || { echo "headplane did not respond on :3000"; exit 1; }
+          echo "OK: headplane responds on :3000"
+          {{- end }}
+          echo "SMOKE OK"
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 200m
+          memory: 64Mi
+{{- end }}
