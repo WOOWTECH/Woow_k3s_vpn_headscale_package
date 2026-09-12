@@ -27,14 +27,32 @@ spec:
       args:
         - |
           set -eu
+          # A single short-lived pod's first connection to a freshly-scheduled
+          # test pod's own Service path can hit a transient conntrack/DNAT
+          # miss on some CNI setups; retry a few times before failing rather
+          # than treating one blip as an outage.
+          retry() {
+            n=0
+            while [ "$n" -lt 8 ]; do
+              if "$@"; then return 0; fi
+              n=$((n + 1))
+              sleep 3
+            done
+            return 1
+          }
           echo "-> headscale health"
-          code=$(curl -s -o /dev/null -w '%{http_code}' "http://{{ include "headscale-tenant.headscaleSvc" . }}:8080/health")
-          [ "$code" = "200" ] || { echo "headscale /health returned $code"; exit 1; }
+          check_headscale() {
+            code=$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "http://{{ include "headscale-tenant.headscaleSvc" . }}:8080/health")
+            [ "$code" = "200" ]
+          }
+          retry check_headscale || { echo "headscale /health did not return 200 after retries"; exit 1; }
           echo "OK: headscale /health = 200"
           {{- if .Values.headplane.enabled }}
           echo "-> headplane tcp"
-          curl -s -o /dev/null --max-time 5 "http://headplane.{{ include "headscale-tenant.ns" . }}.svc.cluster.local:3000/" \
-            || { echo "headplane did not respond on :3000"; exit 1; }
+          check_headplane() {
+            curl -s -o /dev/null --max-time 5 "http://headplane.{{ include "headscale-tenant.ns" . }}.svc.cluster.local:3000/"
+          }
+          retry check_headplane || { echo "headplane did not respond on :3000 after retries"; exit 1; }
           echo "OK: headplane responds on :3000"
           {{- end }}
           echo "SMOKE OK"
