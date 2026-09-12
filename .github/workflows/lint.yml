@@ -199,7 +199,12 @@ jobs:
           import sys, yaml
           v = yaml.safe_load(open("values.yaml"))["secrets"]
           bad = [k for k, val in v.items() if k != "create" and val]
-          for f in ("/tmp/r2/local-instance.yaml",):
+          # minimal.yaml is the one render that never sets secrets.create,
+          # so it renders on the chart's own default (false). local-instance
+          # and secrets.yaml deliberately use secrets.create=true — this repo's
+          # own instance values choose to render the demo DB's Secret rather
+          # than requiring it pre-created, since it's disposable demo data.
+          for f in ("/tmp/r2/minimal.yaml",):
               for d in yaml.safe_load_all(open(f)):
                   if d and d["kind"] == "Secret":
                       bad.append(f"{f} must not contain a Secret with secrets.create=false")
