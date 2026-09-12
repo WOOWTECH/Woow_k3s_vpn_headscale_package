@@ -7,7 +7,7 @@ set -euo pipefail
 NAMESPACE="${NAMESPACE:-tenant-local}"
 RELEASE="${RELEASE:-headscale-tenant}"
 CONTEXT="${CONTEXT:-default}"
-IMAGE="${IMAGE:-tailscale/tailscale:v1.76.6}"
+IMAGE="${IMAGE:-tailscale/tailscale:v1.102.3}"
 POD="functest-$$"
 
 cleanup() { kubectl --context "$CONTEXT" -n "$NAMESPACE" delete pod "$POD" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }

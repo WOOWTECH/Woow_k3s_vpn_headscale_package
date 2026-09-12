@@ -112,8 +112,11 @@ headplane:
 # Service onto the tailnet at ts-hostname:targetPort via TS_SERVE_CONFIG TCP
 # forwarding (userspace mode — no NET_ADMIN, no /dev/net/tun).
 proxyImage:
+  # v1.76.6 was rejected by headscale v0.29.2 with "unsupported client
+  # version" (its capability version is too old for this headscale release);
+  # v1.102.3 is the pinned stable release that actually registers.
   repository: tailscale/tailscale
-  tag: "v1.76.6"
+  tag: "v1.102.3"
 
 proxies:
   - name: nginx
