@@ -27,7 +27,7 @@ spec:
 EOF
 
 echo "==> Waiting for key secret..."
-for i in $(seq 1 12); do
+for _ in $(seq 1 12); do
   kubectl get secret "proxy-${TS_HOSTNAME}-preauth-key" -n tenant-test &>/dev/null && break
   sleep 5
 done
