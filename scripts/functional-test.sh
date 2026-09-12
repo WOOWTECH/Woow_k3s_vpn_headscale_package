@@ -55,29 +55,53 @@ kubectl --context "$CONTEXT" -n "$NAMESPACE" wait --for=condition=Ready "pod/$PO
 echo "==> Waiting for the tailnet join"
 STATE=""
 for i in $(seq 1 24); do
-  STATE=$(kubectl --context "$CONTEXT" -n "$NAMESPACE" exec "$POD" -- tailscale status --json 2>/dev/null | grep -o '"BackendState":"[A-Za-z]*"' | head -1 || true)
+  # tailscale's --json output is pretty-printed (space after the colon) —
+  # match loosely rather than assuming compact JSON.
+  STATE=$(kubectl --context "$CONTEXT" -n "$NAMESPACE" exec "$POD" -- tailscale status --json 2>/dev/null | grep -o '"BackendState": *"[A-Za-z]*"' | head -1 || true)
   echo "  [$i] $STATE"
-  [ "$STATE" = '"BackendState":"Running"' ] && break
+  echo "$STATE" | grep -q '"Running"' && break
   sleep 5
 done
-[ "$STATE" = '"BackendState":"Running"' ] || { echo "tailnet join did not reach Running"; exit 1; }
+echo "$STATE" | grep -q '"Running"' || { echo "tailnet join did not reach Running"; exit 1; }
 echo "OK: tailnet online"
 
 fail=0
 check() {
-  local name="$1" url="$2"
-  echo "==> curl (via tailscale) $url"
-  if kubectl --context "$CONTEXT" -n "$NAMESPACE" exec "$POD" -- tailscale curl --max-time 10 "$url" >/dev/null 2>&1; then
-    echo "OK: $name reachable"
+  local name="$1" hostname="$2" port="$3" path="${4:-/}"
+  echo "==> $name via tailnet ($hostname:$port$path)"
+  # No `tailscale curl` in this CLI, and MagicDNS short names aren't
+  # guaranteed resolvable from an unprivileged userspace client's own
+  # resolver — resolve the peer's tailnet IP from `tailscale status` instead,
+  # then speak plain HTTP over `tailscale nc` (a `sleep` after the request
+  # keeps stdin open long enough for nc to read the response before exiting).
+  local ip
+  ip=$(kubectl --context "$CONTEXT" -n "$NAMESPACE" exec "$POD" -- tailscale status --json 2>/dev/null \
+    | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for p in d.get('Peer', {}).values():
+    if p.get('HostName') == '$hostname':
+        print(p['TailscaleIPs'][0]); break
+" 2>/dev/null)
+  if [ -z "$ip" ]; then
+    echo "FAIL: $name — no tailnet peer named $hostname"
+    fail=1
+    return
+  fi
+  local resp
+  resp=$(kubectl --context "$CONTEXT" -n "$NAMESPACE" exec "$POD" -- sh -c \
+    "{ printf 'GET $path HTTP/1.0\r\nHost: $hostname\r\n\r\n'; sleep 2; } | timeout 8 tailscale nc $ip $port" 2>/dev/null || true)
+  if echo "$resp" | head -1 | grep -q "^HTTP/1\."; then
+    echo "OK: $name reachable ($(echo "$resp" | head -1))"
   else
-    echo "FAIL: $name not reachable via tailnet"
+    echo "FAIL: $name not reachable via tailnet (got: $(echo "$resp" | head -1))"
     fail=1
   fi
 }
 
-check nginx  "http://nginx-test/"
-check ha     "http://homeassistant:8123/"
-check odoo   "http://odoo:8069/web/login"
+check nginx  nginx-test    80   /
+check ha     homeassistant 8123 /
+check odoo   odoo          8069 /web/login
 
 if [ "$fail" -eq 0 ]; then
   echo "FUNCTIONAL TEST OK: tailnet online, all proxies reachable"
