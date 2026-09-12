@@ -40,7 +40,7 @@ jobs:
           helm template headscale-tenant . -n tenant-local -f deploy/local/headscale-tenant.yaml > /tmp/r/local-instance.yaml
           # namespace.name != release namespace: the only combination that renders
           # templates/namespace.yaml (an empty name follows -n and is skipped by design).
-          helm template headscale-tenant "$TENANT" -n tenant-local --set namespace.name=other-ns > /tmp/r/other-ns.yaml
+          helm template headscale-tenant . -n tenant-local --set namespace.name=other-ns > /tmp/r/other-ns.yaml
           helm template headscale-tenant . -n tenant-local                                        > /tmp/r/defaults.yaml
           helm template headscale-tenant .                                                        > /tmp/r/default-ns.yaml
           helm template headscale-tenant . -n tenant-local \
