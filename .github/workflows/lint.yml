@@ -163,7 +163,7 @@ jobs:
           mkdir -p /tmp/r2
           helm template headscale-demo-services . -n tenant-local -f deploy/local/headscale-demo-services.yaml --set secrets.postgresPassword=x > /tmp/r2/local-instance.yaml
           helm template headscale-demo-services . -n tenant-local --set secrets.create=true,secrets.postgresPassword=x > /tmp/r2/secrets.yaml
-          helm template headscale-demo-services .                --set secrets.create=true,secrets.postgresPassword=x,namespace.create=true > /tmp/r2/default-ns.yaml
+          helm template headscale-demo-services .                --set secrets.create=true,secrets.postgresPassword=x,namespace.create=true,namespace.name=demo-elsewhere > /tmp/r2/default-ns.yaml
           helm template headscale-demo-services . -n tenant-local --set odoo.enabled=false,homeassistant.enabled=false > /tmp/r2/minimal.yaml
           wc -l /tmp/r2/*.yaml
 
@@ -236,3 +236,32 @@ jobs:
         uses: ludeeus/action-shellcheck@2.0.0
         with:
           scandir: './scripts'
+
+      - name: "-n controls object placement (namespace footgun)"
+        run: |
+          # A values-file `namespace.name` that silently beats `-n` is how a
+          # rehearsal once wrote Helm ownership annotations onto a live
+          # production Deployment. Every object must land in the namespace
+          # given by -n when namespace.name is left at its empty default.
+          got=$(helm template t charts/headscale-demo-services -n SENTINEL --skip-tests  | grep "^  namespace:" | sort -u)
+          if [ "$got" != "  namespace: SENTINEL" ]; then
+            echo "::error::charts/headscale-demo-services ignores -n: $got"; exit 1
+          fi
+          got=$(helm template t charts/headscale-tenant -n SENTINEL --skip-tests  | grep "^  namespace:" | sort -u)
+          if [ "$got" != "  namespace: SENTINEL" ]; then
+            echo "::error::charts/headscale-tenant ignores -n: $got"; exit 1
+          fi
+          echo "-n controls placement for every chart"
+
+      - name: namespace.name must default to empty
+        run: |
+          python3 - <<'EOF'
+          import sys, yaml, glob
+          bad = []
+          for f in glob.glob("**/values.yaml", recursive=True):
+              v = yaml.safe_load(open(f)) or {}
+              n = (v.get("namespace") or {})
+              if isinstance(n, dict) and n.get("name"):
+                  bad.append(f"{f}: namespace.name defaults to {n['name']!r}; it must be \"\" so -n wins")
+          sys.exit("\n".join(bad)) if bad else print("namespace.name defaults are empty")
+          EOF

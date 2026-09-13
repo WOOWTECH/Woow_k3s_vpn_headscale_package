@@ -1,9 +1,9 @@
-{{- if and .Values.namespace.create (ne .Values.namespace.name .Release.Namespace) }}
+{{- if and .Values.namespace.create (ne (include "headscale-demo-services.ns" .) .Release.Namespace) }}
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: {{ .Values.namespace.name }}
+  name: {{ include "headscale-demo-services.ns" . }}
   labels:
     app.kubernetes.io/name: headscale-demo-services
     {{- include "headscale-demo-services.partOf" . | nindent 4 }}
