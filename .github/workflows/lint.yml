@@ -163,7 +163,7 @@ jobs:
           mkdir -p /tmp/r2
           helm template headscale-demo-services . -n tenant-local -f deploy/local/headscale-demo-services.yaml --set secrets.postgresPassword=x > /tmp/r2/local-instance.yaml
           helm template headscale-demo-services . -n tenant-local --set secrets.create=true,secrets.postgresPassword=x > /tmp/r2/secrets.yaml
-          helm template headscale-demo-services .                --set secrets.create=true,secrets.postgresPassword=x,namespace.create=true > /tmp/r2/default-ns.yaml
+          helm template headscale-demo-services .                --set secrets.create=true,secrets.postgresPassword=x,namespace.create=true,namespace.name=demo-elsewhere > /tmp/r2/default-ns.yaml
           helm template headscale-demo-services . -n tenant-local --set odoo.enabled=false,homeassistant.enabled=false > /tmp/r2/minimal.yaml
           wc -l /tmp/r2/*.yaml
 
