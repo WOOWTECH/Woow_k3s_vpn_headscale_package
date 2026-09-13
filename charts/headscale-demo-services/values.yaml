@@ -17,6 +17,11 @@ storageClassName: local-path
 
 nginx:
   enabled: true
+  # nginx's default `worker_processes auto` counts the NODE's cores, not the
+  # container's CPU limit, so on a big node it spawns hundreds of workers and
+  # is OOMKilled against a small memory limit. Pin it instead of raising the
+  # limit - this is a demo server, it does not need one worker per core.
+  workerProcesses: 2
   image:
     repository: nginx
     tag: "1.27-alpine"
