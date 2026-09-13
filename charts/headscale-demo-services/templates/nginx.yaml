@@ -20,6 +20,20 @@ spec:
       containers:
         - name: nginx
           image: "{{ .Values.nginx.image.repository }}:{{ .Values.nginx.image.tag }}"
+          # nginx defaults to `worker_processes auto`, i.e. ONE WORKER PER CPU
+          # CORE of the node - not per the container's CPU limit. On a 256-core
+          # node that is 256 workers, which blows straight past the 128Mi limit
+          # and the pod is OOMKilled in a crash loop. (Measured on woow-k3s
+          # 2026-09-14: every node has 256 cores; the original 4-20 core cluster
+          # never hit this.) This is a demo web server - two workers is ample.
+          # `-g worker_processes N;` collides with the directive the image already
+          # ships in /etc/nginx/nginx.conf ("duplicate directive"), so rewrite
+          # that line instead of adding a second one.
+          command: ["sh", "-c"]
+          args:
+            - |
+              sed -i 's/^worker_processes.*/worker_processes {{ .Values.nginx.workerProcesses }};/' /etc/nginx/nginx.conf
+              exec nginx -g 'daemon off;'
           ports:
             - containerPort: 80
           resources:
